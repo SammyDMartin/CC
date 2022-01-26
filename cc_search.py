@@ -19,9 +19,11 @@ import numpy as np
 def make_selfplay_checkpoint(environment,RL_alg, steps=10):
   policy,trainer = RL_alg
 
+  steps_per_game_train = 10
+
   C_original = {'env': environment,
-    'env_config': {'get_additional_info': True,
-      'max_steps': 100,
+    'env_config': {'get_additional_info': True, "output_additional_info":True,
+      'max_steps': steps_per_game_train,
       'players_ids': ['player_row', 'player_col']},
     'framework': 'torch',
     'lr': 0.0001,
@@ -108,6 +110,7 @@ def get_rllib_config_eval(seeds,
         "players_ids": ["player_row", "player_col"],
         "max_steps": steps,
         "get_additional_info": True,
+        "output_additional_info":True
     }
 
     rllib_config = {
@@ -124,7 +127,8 @@ def get_rllib_config_eval(seeds,
                     game.ACTION_SPACE, 
                     # Added the info to specify which checkpoint to load from and which policy to load inside it
                     {
-                        LOAD_FROM_CONFIG_KEY:(checkpoint_paths[0], env_config["players_ids"][0]),         
+                        LOAD_FROM_CONFIG_KEY:(checkpoint_paths[0], env_config["players_ids"][0]),
+                        "SSD":(game.PAYOUT_MATRIX,0)         
                     }
                 ),
                 env_config["players_ids"][1]: (
@@ -133,7 +137,8 @@ def get_rllib_config_eval(seeds,
                     game.ACTION_SPACE, 
                     # Added the info to specify which checkpoint to load from and which policy to load inside 
                     {
-                        LOAD_FROM_CONFIG_KEY:(checkpoint_paths[1], env_config["players_ids"][1])
+                        LOAD_FROM_CONFIG_KEY:(checkpoint_paths[1], env_config["players_ids"][1]),
+                        "SSD":(game.PAYOUT_MATRIX,1)
                     }
                 ),
             },
@@ -175,13 +180,25 @@ def get_rllib_config_eval(seeds,
           }) 
 
     return rllib_config, stop_config
+
+
+
+
+
+
+
+
+
+
   
 def assess_agent_vs_agent(policies=[],checkpoints=[],environment=None,iters=None):
   seeds = [1]
 
+  steps_per_game = 10
+
   rllib_config, stop_config = get_rllib_config_eval(
       seeds,
-      iters,
+      steps_per_game,
       game=environment,
       debug=False,
       stop_iters=iters,
@@ -204,8 +221,7 @@ def assess_agent_vs_others(agent_trainer,opponents=[],strategies=[],steps=10):
 
   full_outputs={}
 
-  games = ['IteratedPrisonersDilemma','IteratedChicken','IteratedStagHunt','IteratedBoS','MutalismCoordination','PureCoordination','IteratedAsymBos']
-  games_actual = [IteratedPrisonersDilemma, IteratedChicken,IteratedStagHunt, IteratedBoS, MutalismCoordination, PureCoordination,IteratedAsymBoS]
+  games = [IteratedPrisonersDilemma, IteratedChicken,IteratedStagHunt, IteratedBoS, MutalismCoordination, PureCoordination,IteratedAsymBoS]
 
   other_policies = strategies+opponents
   
@@ -221,14 +237,18 @@ def assess_agent_vs_others(agent_trainer,opponents=[],strategies=[],steps=10):
   for game_num in range(len(games)):
     game_outputs = {}
 
-    name = games[game_num]
-    game = games_actual[game_num]
+    name = games[game_num].__name__
+    game = games[game_num]
 
     if agent_trainer[1] == None:
+      #Not training any agent
+
       check = None
       train_res = "no_train"
       cps = []
     else:
+      #make selfplay checkpoint for the RL agent
+
       check,train_res = make_selfplay_checkpoint(game,agent_trainer,train_steps)
       cps = [check]
     pbar.update(1)
@@ -237,13 +257,7 @@ def assess_agent_vs_others(agent_trainer,opponents=[],strategies=[],steps=10):
 
    
     for itr, other_policy in enumerate(other_policies):
-      if agent_trainer[0] in strategies:
-        #strategy is the main player
-        strat_func = agent_trainer[0]
-        print(strat_func,game)
-        agent = strat_func(game,0)
-      else:
-        agent = agent_trainer[0]
+      agent = agent_trainer[0]
 
       if other_policy in opponents:
         #other_policy is an RL agent
@@ -259,12 +273,11 @@ def assess_agent_vs_others(agent_trainer,opponents=[],strategies=[],steps=10):
 
 
       elif other_policy in strategies:
-        #other_policy is a non-RL strat
+        #other_policy is a non-RL bot
         try:
-          opponent_name = str(other_policy.__name__)+str(other_policy(game,1).__name__)
+          opponent_name = str(other_policy.__name__)
         except Exception:
           print("Cannot use policy, {}".format(other_policy.__name__))
-        other_policy = other_policy(game,1)
 
       pols = [agent,other_policy]
 

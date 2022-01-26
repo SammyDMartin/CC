@@ -1,6 +1,7 @@
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
+from multiprocessing import dummy
 import pickle5
 
 import gym
@@ -407,30 +408,190 @@ class DefectPolicy(CoopPolicy):
     return np.array([act_zero_one] * len(obs_batch)), \
             [], {}
 
-class TFTAverage(RandomPolicy):
+#====================
+
+class DummyMGSD():
+  def __init__(self,mgsd):
+      self.PAYOUT_MATRIX = mgsd
+
+class BRToLastPolicy(RandomPolicy):
     """Play the move that would beat the last move of the opponent."""
+    def __init__(self, observation_space, action_space, config):
+        super().__init__(observation_space, action_space, config)
+        self.rew_memory = []
+        self.act_memory = []
+        self.obs_memory = []
+        self.num = 1
+        self.output = 0
+        self.random_out = False
+        self.SSD_config = config["SSD"]
+
+        self.maximin_action = self.maximin_policy()
+
+    def maximin_policy(self):
+        maximin_actions = maximin(DummyMGSD(self.SSD_config[0]))
+        agent_id = self.SSD_config[1]
+        agent_action_probs = maximin_actions[agent_id]
+        return np.array(agent_action_probs)
 
     def update_target(self):
-      pass
+        pass
     def get_weights(self):
-      pass
+        pass
     def compute_actions(self,
                         obs_batch,
                         state_batches=None,
                         prev_action_batch=None,
                         prev_reward_batch=None,
                         **kwargs):
-      input = obs_batch[0]
-
-      mean_act_his = np.mean(input)
-      if mean_act_his > 0.5:
-        output = 1
-      else:
-        output = 0
+        
+        predicted_reward = self.reward_counterfactual(obs_batch)
 
 
-      return np.array([output]), \
-              [], {}
+
+        assert (predicted_reward == float(prev_reward_batch)), "SSD calc mismatch R:{}, Rpred{}, obs_batch{}".format(prev_reward_batch,predicted_reward,obs_batch)
+
+        action_probs = self.br_to_obs(obs_batch)
+
+        """
+        if len(self.obs_memory)>n+1:
+            raise InterruptedError
+            #pass
+
+        if len(self.obs_memory)>n:
+            print()
+            for idx,_ in enumerate(self.obs_memory):
+                obs, reward,acts = self.obs_memory[idx],self.rew_memory[idx],self.act_memory[idx]
+                print("{}Agent{} {}: obs {}, reward {}={}, acts {}".format(self.SSD_config[1],self.num,idx,obs,reward,reward_from_obs(obs,self.SSD_config),acts))
+        """
+
+        action_out = np.random.choice([0,1],p=action_probs)
+
+        return np.array([action_out]), \
+            [], {}
+
+    def br_to_obs(self,obs_batch):
+        possible_rewards = [self.reward_counterfactual(obs_batch,num) for num in [0,1]]
+        br_previous = np.array([reward==max(possible_rewards) for reward in possible_rewards])
+        br_previous = br_previous/np.sum(br_previous)
+        return br_previous
+
+    
+    def reward_counterfactual(self,obs_input,action_num=None):
+        input_game = self.SSD_config
+        if len(obs_input) != 1:
+            raise InterruptedError("Obs format is wrong, {}".format(obs_input))
+        
+        obs_batch = obs_input[0]
+
+        if len(obs_batch) != 5:
+            raise InterruptedError("MGSD specification is wrong, {}".format(obs_batch))
+        
+        act_number = int(np.where(obs_batch == 1)[0])
+
+        if act_number == 4:
+            #start of round, no obs_history is available, act randomly
+            return 0
+
+        acts = [[0,0],[0,1],[1,0],[1,1]]
+        action = acts[act_number]
+
+        #print(action,acts,act_number)
+        
+        res= input_game[0]
+        RC = input_game[1]
+
+        def hypothetical_reward(player_move):
+            if RC == 0:
+                result = res[player_move,action[1]]
+            elif RC == 1:
+                result = res[action[1],player_move]
+            return float(result[RC]),float(np.sum(result))
+
+        if action_num == None:
+          hypothetical = action[0]
+        else:
+          hypothetical = action_num
+
+        rewards = hypothetical_reward(hypothetical)
+
+        total_reward = rewards[1]
+
+        return rewards[0]
+
+class MaximinPolicy(BRToLastPolicy):
+      def compute_actions(self,
+                        obs_batch,
+                        state_batches=None,
+                        prev_action_batch=None,
+                        prev_reward_batch=None,
+                        **kwargs):
+
+        action_out = np.random.choice([0,1],p=self.maximin_action)
+
+        return np.array([action_out]), \
+            [], {}
+
+"""
+class IdealSelfPolicy(BRToLastPolicy):
+      def compute_actions(self,
+                        obs_batch,
+                        state_batches=None,
+                        prev_action_batch=None,
+                        prev_reward_batch=None,
+                        **kwargs):
+
+        action_out = np.random.choice([0,1],p=self.ideal_self_policy)
+
+        return np.array([action_out]), \
+            [], {}
+"""
+
+class MaximinBullyPolicy(BRToLastPolicy):
+  def __init__(self, observation_space, action_space, config):
+      super().__init__(observation_space, action_space, config)
+      
+      self.bullying = True
+
+  def compute_actions(self,
+                    obs_batch,
+                    state_batches=None,
+                    prev_action_batch=None,
+                    prev_reward_batch=None,
+                    **kwargs):
+
+    self.obs_memory.append(obs_batch)
+    self.rew_memory.append(float(prev_reward_batch))
+
+    if len(self.obs_memory) % 100 == 0:
+      maximin_counterfactual = lambda previous_obs: max([self.reward_counterfactual(previous_obs,num) for num in [0,1]])
+      
+      actual_rews = np.sum(self.rew_memory)
+
+      counterfactual_rews = np.sum([maximin_counterfactual(obs) for obs in self.obs_memory])
+
+      print("CF{},actual{}".format(counterfactual_rews,actual_rews),flush=True)
+
+      if counterfactual_rews > actual_rews:
+        self.bullying = False
+        
+      print(self.bullying)
+      self.obs_memory,self.rew_memory = [],[]
+
+    if self.bullying == False:
+      action_probs = self.maximin_action
+    else:
+      action_probs = self.br_to_obs(obs_batch)
+      
+    action_out = np.random.choice([0,1],p=action_probs)
+
+
+    return np.array([action_out]), \
+        [], {}
+
+
+
+#====================
 
 
 
@@ -454,6 +615,7 @@ def ideal_selfplay_policy(game, player_num):
 
 random_agent = lambda x,y: RandPolicy
 
+BR_agent = lambda x,y: BRToLastPolicy
 
 
 ################################
@@ -602,8 +764,8 @@ def add_support_checkpoint_composition(policy_class):
 
       MyPolicyClass = MyPPOPolicy
     
-    elif policy_class in [CoopPolicy,DefectPolicy,TFTAverage,RandPolicy]:
-      MyPolicyClass = policy_class
+    #elif policy_class in [CoopPolicy,DefectPolicy,TFTAverage,RandPolicy]:
+    #  MyPolicyClass = policy_class
 
     else: 
       #raise NotImplementedError()
@@ -614,7 +776,7 @@ def add_support_checkpoint_composition(policy_class):
             before_loss_init_load_policy_checkpoint(self)
       except Exception as E:
         print(E)
-        raise NotImplementedError
+        raise NotImplementedError("Could not load policy to agent!")
 
     return MyPolicyClass
 
