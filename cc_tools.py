@@ -293,6 +293,95 @@ def maximin(game):
 
   return maximin1/np.sum(maximin1), maximin2/np.sum(maximin2)
 
+
+def security_vals(game):
+  mmin1, mmin2 = maximin(game)
+  
+  ngame = nash_from_RLLIB(game)
+
+  outcomes_1 = [ngame[mmin1,[1,0]], ngame[mmin1,[0,1]], ngame[mmin1,[0.5,0.5]]]
+
+  outcomes_2 = [ngame[[1,0],mmin2], ngame[[0,1],mmin2], ngame[[0.5,0.5],mmin2]]
+
+  #print(outcomes_1)
+  #print(outcomes_2)
+
+  outcomes_1 = [i[0] for i in outcomes_1]
+  outcomes_2 = [i[1] for i in outcomes_2]
+
+  return min(outcomes_1),min(outcomes_2)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def bully(game):
+  """Calculates which of always 1, always 2 or 1/2 50/50 is closest to bully
+
+  Args:
+      game ([type]): [description]
+
+  Returns:
+      [type]: [description]
+  """
+  out = []
+  for player_id in [0,1]:
+
+    ngame = nash_from_RLLIB(game)
+
+    always_C = np.array([1,0])
+    always_D = np.array([0,1])
+
+    pure_strats = [always_C,always_D]
+
+    #print(ngame)
+
+    me_payoffs = []
+
+    for this_strat in pure_strats:
+      
+      opponent_payoffs = []
+      for opponent_strat in pure_strats:
+        if player_id == 0:
+          payoff_me,payoff_opp = ngame[this_strat, opponent_strat]
+        else:
+          payoff_opp,payoff_me = ngame[opponent_strat,this_strat]
+      
+        opponent_payoffs.append(payoff_opp)
+      
+      opponent_BR = [float(x == max(opponent_payoffs)) for x in opponent_payoffs]
+      opponent_BR = np.array(opponent_BR)/np.sum(opponent_BR)
+
+      if player_id == 0:
+        payoff_me,payoff_opp = ngame[this_strat, opponent_BR]
+      else:
+        payoff_opp,payoff_me = ngame[opponent_BR,this_strat]
+      
+      me_payoffs.append(payoff_me)
+
+    
+    me_BR_BR = [float(x == max(me_payoffs)) for x in me_payoffs]
+    me_BR_BR = np.array(me_BR_BR)/np.sum(me_BR_BR)
+
+    out.append(me_BR_BR)
+
+  return out[0], out[1]
+
+
 def maximax(game):
     #print(game)
     ngame = nash_from_RLLIB(game)
@@ -589,6 +678,60 @@ class MaximinBullyPolicy(BRToLastPolicy):
     return np.array([action_out]), \
         [], {}
 
+
+class UncoopExploiter(BRToLastPolicy):
+  def __init__(self, observation_space, action_space, config):
+      super().__init__(observation_space, action_space, config)
+      
+      self.bully_action = self.bully_policy()
+      self.V_security = self.security_value()
+      self.MBCount = np.array([0.0,0.0])
+  
+  def bully_policy(self):
+      bully_actions = bully(DummyMGSD(self.SSD_config[0]))
+      agent_id = self.SSD_config[1]
+      agent_action_probs = bully_actions[agent_id]
+      return np.array(agent_action_probs)
+
+  def security_value(self):
+      svs = security_vals(DummyMGSD(self.SSD_config[0]))
+      agent_id = self.SSD_config[1]
+      return svs[agent_id]
+
+  def compute_actions(self,
+                    obs_batch,
+                    state_batches=None,
+                    prev_action_batch=None,
+                    prev_reward_batch=None,
+                    **kwargs):
+
+    self.obs_memory.append(obs_batch)
+    self.rew_memory.append(float(prev_reward_batch))
+
+    average_return = np.mean(self.rew_memory)
+
+    if average_return < self.V_security:
+      action_probs = self.maximin_action
+      self.MBCount[0] += 1
+    else:
+      action_probs = self.bully_action
+      self.MBCount[1] += 1
+
+    MBfrac = self.MBCount[1]/(self.MBCount[1]+self.MBCount[0])
+
+    """
+    if self.bully_action[0] == self.maximin_action[0]:
+      print("average{},security{},bullyfraction{}".format(average_return,self.V_security," N/A"),flush=True)
+    else:
+      print("average{},security{},bullyfraction{}".format(average_return,self.V_security,MBfrac),flush=True)
+    """
+
+      
+    action_out = np.random.choice([0,1],p=action_probs)
+
+
+    return np.array([action_out]), \
+        [], {}
 
 
 #====================
