@@ -2,6 +2,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 from multiprocessing import dummy
+from tempfile import TemporaryDirectory
 import pickle5
 
 import gym
@@ -427,6 +428,54 @@ def maximax(game):
 
     return mmax1/np.sum(mmax1), mmax2/np.sum(mmax2)
 
+
+
+def mindless_cooperate(game):
+    #print(game)
+    ngame = nash_from_RLLIB(game)
+
+    always_C = np.array([1,0])
+    always_D = np.array([0,1])
+
+    pure_strats = [always_C,always_D]
+
+    
+    utils_1 = [[],[]]
+    utils_2 = [[],[]]
+
+    #print(ngame)
+
+    for ids1,s1 in enumerate(pure_strats):
+      for ids2,s2 in enumerate(pure_strats):
+        utils = ngame[s1,s2]
+        welfare = utils[0]+utils[1]
+        if ids1 == 0:
+          utils_1[0].append(welfare)
+        elif ids1 == 1:
+          utils_1[1].append(welfare)
+        if ids2 == 0:
+          utils_2[0].append(welfare)
+        elif ids2 == 1:
+          utils_2[1].append(welfare)
+
+    #print("Row player always action 1:{}, action 2:{}".format(utils_1[0],utils_1[1]))
+    #print("Col player always action 1:{}, action 2:{}".format(utils_2[0],utils_2[1]))
+
+    max_vals = lambda util : [max(outcome) for outcome in util]
+
+    mmax1 = max_vals(utils_1)
+    mmax2 = max_vals(utils_2)
+
+    #print(mmax1,mmax2)
+    
+    mmax1 = np.array([int(m1 == max(mmax1)) for m1 in mmax1])
+    
+    mmax2 = np.array([int(m2 == max(mmax2)) for m2 in mmax2])
+    
+    #print(mmax1,mmax2)
+
+    return mmax1/np.sum(mmax1), mmax2/np.sum(mmax2)
+
 def ideal_selfplay(game):
   """"Ideal agent behaviour"
 
@@ -503,7 +552,7 @@ class DummyMGSD():
   def __init__(self,mgsd):
       self.PAYOUT_MATRIX = mgsd
 
-class BRToLastPolicy(RandomPolicy):
+class TemplatePolicy(RandomPolicy):
     """Play the move that would beat the last move of the opponent."""
     def __init__(self, observation_space, action_space, config):
         super().__init__(observation_space, action_space, config)
@@ -515,18 +564,22 @@ class BRToLastPolicy(RandomPolicy):
         self.random_out = False
         self.SSD_config = config["SSD"]
 
-        self.maximin_action = self.maximin_policy()
+        self.maximin_action = self.act_policy(maximin)
+        self.bully_action = self.act_policy(bully)
+        self.mindless_coop_action = self.act_policy(mindless_cooperate)
+        self.maximax_action = self.act_policy(maximax)
 
-    def maximin_policy(self):
-        maximin_actions = maximin(DummyMGSD(self.SSD_config[0]))
+    def act_policy(self,policy):
+        maximin_actions = policy(DummyMGSD(self.SSD_config[0]))
         agent_id = self.SSD_config[1]
         agent_action_probs = maximin_actions[agent_id]
         return np.array(agent_action_probs)
-
+    
     def update_target(self):
         pass
     def get_weights(self):
         pass
+    """
     def compute_actions(self,
                         obs_batch,
                         state_batches=None,
@@ -540,25 +593,13 @@ class BRToLastPolicy(RandomPolicy):
 
         assert (predicted_reward == float(prev_reward_batch)), "SSD calc mismatch R:{}, Rpred{}, obs_batch{}".format(prev_reward_batch,predicted_reward,obs_batch)
 
-        action_probs = self.br_to_obs(obs_batch)
-
-        """
-        if len(self.obs_memory)>n+1:
-            raise InterruptedError
-            #pass
-
-        if len(self.obs_memory)>n:
-            print()
-            for idx,_ in enumerate(self.obs_memory):
-                obs, reward,acts = self.obs_memory[idx],self.rew_memory[idx],self.act_memory[idx]
-                print("{}Agent{} {}: obs {}, reward {}={}, acts {}".format(self.SSD_config[1],self.num,idx,obs,reward,reward_from_obs(obs,self.SSD_config),acts))
-        """
+        action_probs = self.br_to_obs(obs_batch)        
 
         action_out = np.random.choice([0,1],p=action_probs)
 
         return np.array([action_out]), \
             [], {}
-
+    
     def br_to_obs(self,obs_batch):
         possible_rewards = [self.reward_counterfactual(obs_batch,num) for num in [0,1]]
         br_previous = np.array([reward==max(possible_rewards) for reward in possible_rewards])
@@ -607,8 +648,9 @@ class BRToLastPolicy(RandomPolicy):
         total_reward = rewards[1]
 
         return rewards[0]
+    """
 
-class MaximinPolicy(BRToLastPolicy):
+class MaximinPolicy(TemplatePolicy):
       def compute_actions(self,
                         obs_batch,
                         state_batches=None,
@@ -617,6 +659,45 @@ class MaximinPolicy(BRToLastPolicy):
                         **kwargs):
 
         action_out = np.random.choice([0,1],p=self.maximin_action)
+
+        return np.array([action_out]), \
+            [], {}
+
+class MaximaxPolicy(TemplatePolicy):
+      def compute_actions(self,
+                        obs_batch,
+                        state_batches=None,
+                        prev_action_batch=None,
+                        prev_reward_batch=None,
+                        **kwargs):
+
+        action_out = np.random.choice([0,1],p=self.maximax_action)
+
+        return np.array([action_out]), \
+            [], {}
+
+class BullyPolicy(TemplatePolicy):
+      def compute_actions(self,
+                        obs_batch,
+                        state_batches=None,
+                        prev_action_batch=None,
+                        prev_reward_batch=None,
+                        **kwargs):
+
+        action_out = np.random.choice([0,1],p=self.bully_action)
+
+        return np.array([action_out]), \
+            [], {}
+
+class MindlessCoopPolicy(TemplatePolicy):
+      def compute_actions(self,
+                        obs_batch,
+                        state_batches=None,
+                        prev_action_batch=None,
+                        prev_reward_batch=None,
+                        **kwargs):
+
+        action_out = np.random.choice([0,1],p=self.mindless_coop_action)
 
         return np.array([action_out]), \
             [], {}
@@ -634,7 +715,7 @@ class IdealSelfPolicy(BRToLastPolicy):
 
         return np.array([action_out]), \
             [], {}
-"""
+
 
 class MaximinBullyPolicy(BRToLastPolicy):
   def __init__(self, observation_space, action_space, config):
@@ -677,21 +758,15 @@ class MaximinBullyPolicy(BRToLastPolicy):
 
     return np.array([action_out]), \
         [], {}
+"""
 
-
-class UncoopExploiter(BRToLastPolicy):
+class UncoopExploiterPolicy(TemplatePolicy):
   def __init__(self, observation_space, action_space, config):
       super().__init__(observation_space, action_space, config)
       
-      self.bully_action = self.bully_policy()
+      self.policy_action = self.act_policy(bully)
       self.V_security = self.security_value()
       self.MBCount = np.array([0.0,0.0])
-  
-  def bully_policy(self):
-      bully_actions = bully(DummyMGSD(self.SSD_config[0]))
-      agent_id = self.SSD_config[1]
-      agent_action_probs = bully_actions[agent_id]
-      return np.array(agent_action_probs)
 
   def security_value(self):
       svs = security_vals(DummyMGSD(self.SSD_config[0]))
@@ -714,7 +789,7 @@ class UncoopExploiter(BRToLastPolicy):
       action_probs = self.maximin_action
       self.MBCount[0] += 1
     else:
-      action_probs = self.bully_action
+      action_probs = self.policy_action
       self.MBCount[1] += 1
 
     MBfrac = self.MBCount[1]/(self.MBCount[1]+self.MBCount[0])
@@ -734,31 +809,13 @@ class UncoopExploiter(BRToLastPolicy):
         [], {}
 
 
-#====================
-
-
-
-def maximin_policy(game, player_num):
-  vector = maximin(game)[player_num]
-  if vector[0] == 1:
-    return CoopPolicy
-  if vector[1] == 1:
-    return DefectPolicy
-  else:
-    return RandomPolicy
-
-def ideal_selfplay_policy(game, player_num):
-  vector = ideal_selfplay(game)[player_num]
-  if vector[0] == 1:
-    return CoopPolicy
-  if vector[1] == 1:
-    return DefectPolicy
-  else:
-    return RandomPolicy
-
-random_agent = lambda x,y: RandPolicy
-
-BR_agent = lambda x,y: BRToLastPolicy
+class MindlessCoopSecurityPolicy(UncoopExploiterPolicy):
+  def __init__(self, observation_space, action_space, config):
+      super().__init__(observation_space, action_space, config)
+      
+      self.policy_action = self.act_policy(mindless_cooperate)
+      self.V_security = self.security_value()
+      self.MBCount = np.array([0.0,0.0])
 
 
 ################################
