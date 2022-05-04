@@ -2,6 +2,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 from multiprocessing import dummy
+from telnetlib import NOP
 from tempfile import TemporaryDirectory
 import pickle5
 
@@ -546,6 +547,30 @@ class DefectPolicy(CoopPolicy):
     return np.array([act_zero_one] * len(obs_batch)), \
             [], {}
 
+
+class PreferActZero(CoopPolicy):
+  def __init__(self, observation_space, action_space, config):
+    super().__init__(observation_space, action_space, config)
+    self.act_prob = 0.95
+  def compute_actions(self,
+                      obs_batch,
+                      state_batches=None,
+                      prev_action_batch=None,
+                      prev_reward_batch=None,
+                      **kwargs):
+      # Alternatively, a numpy array would work here as well.
+      # e.g.: np.array([random.choice([0, 1])] * len(obs_batch))
+    action_probs = [self.act_prob, 1-self.act_prob]
+    action_out = np.random.choice([0,1],p=action_probs)
+
+    return np.array([action_out] * len(obs_batch)), \
+            [], {}
+
+class PreferActOne(PreferActZero):
+  def __init__(self, observation_space, action_space, config):
+    super().__init__(observation_space, action_space, config)
+    self.act_prob = 0.05
+
 #====================
 
 class DummyMGSD():
@@ -767,6 +792,7 @@ class UncoopExploiterPolicy(TemplatePolicy):
       self.policy_action = self.act_policy(bully)
       self.V_security = self.security_value()
       self.MBCount = np.array([0.0,0.0])
+      self.memory_window = None
 
   def security_value(self):
       svs = security_vals(DummyMGSD(self.SSD_config[0]))
@@ -783,7 +809,13 @@ class UncoopExploiterPolicy(TemplatePolicy):
     self.obs_memory.append(obs_batch)
     self.rew_memory.append(float(prev_reward_batch))
 
-    average_return = np.mean(self.rew_memory)
+    if self.memory_window is not None:
+      step = int(-1*self.memory_window)
+      reward_memory = self.rew_memory[step:]
+    else:
+      reward_memory = self.rew_memory
+
+    average_return = np.mean(reward_memory)
 
     if average_return < self.V_security:
       action_probs = self.maximin_action
@@ -817,6 +849,63 @@ class MindlessCoopSecurityPolicy(UncoopExploiterPolicy):
       self.V_security = self.security_value()
       self.MBCount = np.array([0.0,0.0])
 
+class GrimTrigger(UncoopExploiterPolicy):
+  def __init__(self, observation_space, action_space, config):
+    super().__init__(observation_space, action_space, config)
+    self.triggered = False
+    self.memory_window = 1
+
+  def compute_actions(self,
+                    obs_batch,
+                    state_batches=None,
+                    prev_action_batch=None,
+                    prev_reward_batch=None,
+                    **kwargs):
+
+    if len(self.obs_memory) < 2:
+      self.triggered = False
+
+    self.obs_memory.append(obs_batch)
+    self.rew_memory.append(float(prev_reward_batch))
+
+    if self.memory_window is not None:
+      step = int(-1*self.memory_window)
+      reward_memory = self.rew_memory[step:]
+    else:
+      reward_memory = self.rew_memory
+
+    average_return = np.mean(reward_memory)
+
+    if average_return < self.V_security:
+      self.triggered = True
+
+    if self.triggered == True:
+      action_probs = self.maximin_action
+      self.MBCount[0] += 1
+    else:
+      action_probs = self.policy_action
+      self.MBCount[1] += 1
+
+    MBfrac = self.MBCount[1]/(self.MBCount[1]+self.MBCount[0])
+
+    """
+    if self.bully_action[0] == self.maximin_action[0]:
+      print("average{},security{},bullyfraction{}".format(average_return,self.V_security," N/A"),flush=True)
+    else:
+      print("average{},security{},bullyfraction{}".format(average_return,self.V_security,MBfrac),flush=True)
+    """
+
+      
+    action_out = np.random.choice([0,1],p=action_probs)
+
+
+    return np.array([action_out]), \
+        [], {}
+
+class GrimTriggerTwo(GrimTrigger):
+  def __init__(self, observation_space, action_space, config):
+    super().__init__(observation_space, action_space, config)
+    self.memory_window = 2
 
 ################################
 
@@ -1047,3 +1136,22 @@ def make_selfplay_checkpoint(environment,RL_alg, steps=10):
   tune_analysis.get_all_configs()
 
   return checkpoint, tune_analysis
+
+
+
+def pretty_print_matrix(g):
+  m_list = g.PAYOUT_MATRIX.tolist()
+  print(m_list[0])
+  print(m_list[1])
+
+
+def test_matrix(g):
+  print(g.__name__)
+  pretty_print_matrix(g)
+  #print(nash_from_RLLIB(g))
+  print("\nBully action steps (out of pure and 50/50 strats): {}".format(bully(g)))
+  print("Maximin action steps (out of pure and 50/50 strats): {}".format(maximin(g)))
+  print("Maximax action steps (out of pure and 50/50 strats): {}".format(maximax(g)))
+  print("Mindless Coop action steps (out of pure and 50/50 strats): {}".format(mindless_cooperate(g)))
+  print("Security Vals: {}".format(security_vals(g)))
+  print("\n\n")
